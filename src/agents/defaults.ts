@@ -1,4 +1,5 @@
 // Defaults for agent metadata when upstream does not supply them.
+// See https://docs.anthropic.com/en/docs/about-claude/models for current limits.
 // Model id uses pi-ai's built-in Anthropic catalog.
 export const DEFAULT_PROVIDER = "anthropic";
 export const DEFAULT_MODEL = "claude-opus-4-6";
