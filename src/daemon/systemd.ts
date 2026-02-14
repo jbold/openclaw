@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { GatewayServiceRuntime } from "./service-runtime.js";
 import { colorize, isRich, theme } from "../terminal/theme.js";
+import { VERSION } from "../version.js";
 import {
   formatGatewayServiceDescription,
   LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES,
@@ -314,8 +315,36 @@ export async function restartSystemdService({
   env?: Record<string, string | undefined>;
 }): Promise<void> {
   await assertSystemdAvailable();
-  const serviceName = resolveSystemdServiceName(env ?? {});
+  const resolvedEnv = env ?? {};
+  const serviceName = resolveSystemdServiceName(resolvedEnv);
   const unitName = `${serviceName}.service`;
+
+  // Update version in unit file if it has drifted from the running version
+  try {
+    const unitPath = resolveSystemdUnitPath(resolvedEnv);
+    const content = await fs.readFile(unitPath, "utf8");
+    const currentVersion = VERSION;
+    const staleVersion = content.match(/OPENCLAW_SERVICE_VERSION=(\S+)/)?.[1];
+    if (staleVersion && staleVersion !== currentVersion) {
+      const updated = content
+        .replace(
+          /^Description=.*$/m,
+          `Description=${formatGatewayServiceDescription({ profile: resolvedEnv.OPENCLAW_PROFILE, version: currentVersion })}`,
+        )
+        .replace(/OPENCLAW_SERVICE_VERSION=\S+/, `OPENCLAW_SERVICE_VERSION=${currentVersion}`);
+      await fs.writeFile(unitPath, updated, "utf8");
+      const reload = await execSystemctl(["--user", "daemon-reload"]);
+      if (reload.code !== 0) {
+        throw new Error(`systemctl daemon-reload failed: ${reload.stderr || reload.stdout}`.trim());
+      }
+      stdout.write(
+        `${formatLine("Updated service version", `${staleVersion} → ${currentVersion}`)}\n`,
+      );
+    }
+  } catch {
+    // If we can't update the unit file, still proceed with restart
+  }
+
   const res = await execSystemctl(["--user", "restart", unitName]);
   if (res.code !== 0) {
     throw new Error(`systemctl restart failed: ${res.stderr || res.stdout}`.trim());
