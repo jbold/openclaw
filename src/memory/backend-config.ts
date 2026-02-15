@@ -6,6 +6,7 @@ import type {
   MemoryCitationsMode,
   MemoryQmdConfig,
   MemoryQmdIndexPath,
+  MemoryQmdSearchMode,
 } from "../config/types.memory.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
@@ -16,6 +17,12 @@ export type ResolvedMemoryBackendConfig = {
   backend: MemoryBackend;
   citations: MemoryCitationsMode;
   qmd?: ResolvedQmdConfig;
+  engram?: ResolvedEngramConfig;
+};
+
+export type ResolvedEngramConfig = {
+  command: string;
+  timeoutMs: number;
 };
 
 export type ResolvedQmdCollection = {
@@ -29,7 +36,11 @@ export type ResolvedQmdUpdateConfig = {
   intervalMs: number;
   debounceMs: number;
   onBoot: boolean;
+  waitForBootSync: boolean;
   embedIntervalMs: number;
+  commandTimeoutMs: number;
+  updateTimeoutMs: number;
+  embedTimeoutMs: number;
 };
 
 export type ResolvedQmdLimitsConfig = {
@@ -47,6 +58,7 @@ export type ResolvedQmdSessionConfig = {
 
 export type ResolvedQmdConfig = {
   command: string;
+  searchMode: MemoryQmdSearchMode;
   collections: ResolvedQmdCollection[];
   sessions: ResolvedQmdSessionConfig;
   update: ResolvedQmdUpdateConfig;
@@ -60,7 +72,11 @@ const DEFAULT_CITATIONS: MemoryCitationsMode = "auto";
 const DEFAULT_QMD_INTERVAL = "5m";
 const DEFAULT_QMD_DEBOUNCE_MS = 15_000;
 const DEFAULT_QMD_TIMEOUT_MS = 4_000;
+const DEFAULT_QMD_SEARCH_MODE: MemoryQmdSearchMode = "query";
 const DEFAULT_QMD_EMBED_INTERVAL = "60m";
+const DEFAULT_QMD_COMMAND_TIMEOUT_MS = 30_000;
+const DEFAULT_QMD_UPDATE_TIMEOUT_MS = 120_000;
+const DEFAULT_QMD_EMBED_TIMEOUT_MS = 120_000;
 const DEFAULT_QMD_LIMITS: ResolvedQmdLimitsConfig = {
   maxResults: 6,
   maxSnippetChars: 700,
@@ -76,6 +92,9 @@ const DEFAULT_QMD_SCOPE: SessionSendPolicyConfig = {
     },
   ],
 };
+const DEFAULT_ENGRAM_COMMAND =
+  "/var/home/bean/.openclaw/workspace/engram/target/debug/engram-openclaw-adapter";
+const DEFAULT_ENGRAM_TIMEOUT_MS = 10_000;
 
 function sanitizeName(input: string): string {
   const lower = input.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
@@ -140,6 +159,13 @@ function resolveDebounceMs(raw: number | undefined): number {
   return DEFAULT_QMD_DEBOUNCE_MS;
 }
 
+function resolveTimeoutMs(raw: number | undefined, fallback: number): number {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  return fallback;
+}
+
 function resolveLimits(raw?: MemoryQmdConfig["limits"]): ResolvedQmdLimitsConfig {
   const parsed: ResolvedQmdLimitsConfig = { ...DEFAULT_QMD_LIMITS };
   if (raw?.maxResults && raw.maxResults > 0) {
@@ -155,6 +181,13 @@ function resolveLimits(raw?: MemoryQmdConfig["limits"]): ResolvedQmdLimitsConfig
     parsed.timeoutMs = Math.floor(raw.timeoutMs);
   }
   return parsed;
+}
+
+function resolveSearchMode(raw?: MemoryQmdConfig["searchMode"]): MemoryQmdSearchMode {
+  if (raw === "search" || raw === "vsearch" || raw === "query") {
+    return raw;
+  }
+  return DEFAULT_QMD_SEARCH_MODE;
 }
 
 function resolveSessionConfig(
@@ -233,7 +266,21 @@ export function resolveMemoryBackendConfig(params: {
 }): ResolvedMemoryBackendConfig {
   const backend = params.cfg.memory?.backend ?? DEFAULT_BACKEND;
   const citations = params.cfg.memory?.citations ?? DEFAULT_CITATIONS;
-  if (backend !== "qmd") {
+
+  if (backend === "engram") {
+    const command = params.cfg.memory?.engram?.command?.trim() || DEFAULT_ENGRAM_COMMAND;
+    const timeoutMs = resolveTimeoutMs(
+      params.cfg.memory?.engram?.timeoutMs,
+      DEFAULT_ENGRAM_TIMEOUT_MS,
+    );
+    return {
+      backend: "engram",
+      citations,
+      engram: { command, timeoutMs },
+    };
+  }
+
+  if (backend !== "qmd" && backend !== "engram") {
     return { backend: "builtin", citations };
   }
 
@@ -251,6 +298,7 @@ export function resolveMemoryBackendConfig(params: {
   const command = parsedCommand?.[0] || rawCommand.split(/\s+/)[0] || "qmd";
   const resolved: ResolvedQmdConfig = {
     command,
+    searchMode: resolveSearchMode(qmdCfg?.searchMode),
     collections,
     includeDefaultMemory,
     sessions: resolveSessionConfig(qmdCfg?.sessions, workspaceDir),
@@ -258,14 +306,27 @@ export function resolveMemoryBackendConfig(params: {
       intervalMs: resolveIntervalMs(qmdCfg?.update?.interval),
       debounceMs: resolveDebounceMs(qmdCfg?.update?.debounceMs),
       onBoot: qmdCfg?.update?.onBoot !== false,
+      waitForBootSync: qmdCfg?.update?.waitForBootSync === true,
       embedIntervalMs: resolveEmbedIntervalMs(qmdCfg?.update?.embedInterval),
+      commandTimeoutMs: resolveTimeoutMs(
+        qmdCfg?.update?.commandTimeoutMs,
+        DEFAULT_QMD_COMMAND_TIMEOUT_MS,
+      ),
+      updateTimeoutMs: resolveTimeoutMs(
+        qmdCfg?.update?.updateTimeoutMs,
+        DEFAULT_QMD_UPDATE_TIMEOUT_MS,
+      ),
+      embedTimeoutMs: resolveTimeoutMs(
+        qmdCfg?.update?.embedTimeoutMs,
+        DEFAULT_QMD_EMBED_TIMEOUT_MS,
+      ),
     },
     limits: resolveLimits(qmdCfg?.limits),
     scope: qmdCfg?.scope ?? DEFAULT_QMD_SCOPE,
   };
 
   return {
-    backend: "qmd",
+    backend,
     citations,
     qmd: resolved,
   };
