@@ -280,7 +280,7 @@ export function resolveMemoryBackendConfig(params: {
     };
   }
 
-  if (backend !== "qmd" && backend !== "engram") {
+  if (backend !== "qmd") {
     return { backend: "builtin", citations };
   }
 
