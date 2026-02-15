@@ -59,12 +59,19 @@ vi.mock("./qmd-manager.js", () => ({
   },
 }));
 
+vi.mock("./engram-manager.js", () => ({
+  EngramMemoryManager: {
+    create: vi.fn(async () => mockPrimary),
+  },
+}));
+
 vi.mock("./manager.js", () => ({
   MemoryIndexManager: {
     get: vi.fn(async () => fallbackManager),
   },
 }));
 
+import { EngramMemoryManager } from "./engram-manager.js";
 import { QmdMemoryManager } from "./qmd-manager.js";
 import { getMemorySearchManager } from "./search-manager.js";
 
@@ -84,6 +91,7 @@ beforeEach(() => {
   fallbackManager.probeVectorAvailability.mockClear();
   fallbackManager.close.mockClear();
   QmdMemoryManager.create.mockClear();
+  EngramMemoryManager.create.mockClear();
 });
 
 describe("getMemorySearchManager caching", () => {
@@ -178,5 +186,70 @@ describe("getMemorySearchManager caching", () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.path).toBe("MEMORY.md");
     expect(fallbackSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses Engram manager when backend=engram", async () => {
+    const cfg = {
+      memory: { backend: "engram", engram: {} },
+      agents: { list: [{ id: "main", default: true, workspace: "/tmp/workspace" }] },
+    } as const;
+
+    const result = await getMemorySearchManager({ cfg, agentId: "main" });
+
+    expect(result.manager).toBeTruthy();
+    expect(EngramMemoryManager.create).toHaveBeenCalledTimes(1);
+    expect(QmdMemoryManager.create).not.toHaveBeenCalled();
+  });
+
+  it("falls back to builtin when Engram manager create returns null", async () => {
+    const cfg = {
+      memory: { backend: "engram", engram: {} },
+      agents: { list: [{ id: "engram-null", default: true, workspace: "/tmp/workspace" }] },
+    } as const;
+    EngramMemoryManager.create.mockResolvedValueOnce(null);
+
+    const result = await getMemorySearchManager({ cfg, agentId: "engram-null" });
+
+    expect(result.manager).toBe(fallbackManager);
+    expect(fallbackSearch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to builtin when Engram manager create throws", async () => {
+    const cfg = {
+      memory: { backend: "engram", engram: {} },
+      agents: { list: [{ id: "engram-throw", default: true, workspace: "/tmp/workspace" }] },
+    } as const;
+    EngramMemoryManager.create.mockRejectedValueOnce(new Error("engram unavailable"));
+
+    const result = await getMemorySearchManager({ cfg, agentId: "engram-throw" });
+
+    expect(result.manager).toBe(fallbackManager);
+  });
+
+  it("preserves direct-chat session scope and memory tool contract during engram fallback", async () => {
+    const cfg = {
+      memory: { backend: "engram", engram: {} },
+      agents: { list: [{ id: "engram-scope", default: true, workspace: "/tmp/workspace" }] },
+    } as const;
+    mockPrimary.search.mockRejectedValueOnce(new Error("engram query failed"));
+
+    const result = await getMemorySearchManager({ cfg, agentId: "engram-scope" });
+    expect(result.manager).toBeTruthy();
+    if (!result.manager) {
+      throw new Error("manager missing");
+    }
+
+    const found = await result.manager.search("hello", { sessionKey: "whatsapp:direct-chat:123" });
+    expect(found).toHaveLength(1);
+    expect(fallbackSearch).toHaveBeenCalledWith("hello", {
+      sessionKey: "whatsapp:direct-chat:123",
+    });
+
+    await expect(result.manager.readFile({ relPath: "MEMORY.md" })).resolves.toEqual({
+      text: "",
+      path: "MEMORY.md",
+    });
+    await expect(result.manager.probeEmbeddingAvailability()).resolves.toEqual({ ok: true });
+    await expect(result.manager.probeVectorAvailability()).resolves.toBe(true);
   });
 });

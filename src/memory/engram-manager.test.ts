@@ -106,7 +106,7 @@ describe("EngramMemoryManager", () => {
     await expect(manager.sync?.({ reason: "manual", force: true })).resolves.toBeUndefined();
 
     const status = manager.status();
-    expect(status.backend).toBe("qmd");
+    expect(status.backend).toBe("engram");
     expect(status.provider).toBe("engram");
     expect(status.custom?.engram).toBeTruthy();
 

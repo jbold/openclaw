@@ -17,6 +17,12 @@ export type ResolvedMemoryBackendConfig = {
   backend: MemoryBackend;
   citations: MemoryCitationsMode;
   qmd?: ResolvedQmdConfig;
+  engram?: ResolvedEngramConfig;
+};
+
+export type ResolvedEngramConfig = {
+  command: string;
+  timeoutMs: number;
 };
 
 export type ResolvedQmdCollection = {
@@ -86,6 +92,9 @@ const DEFAULT_QMD_SCOPE: SessionSendPolicyConfig = {
     },
   ],
 };
+const DEFAULT_ENGRAM_COMMAND =
+  "/var/home/bean/.openclaw/workspace/engram/target/debug/engram-openclaw-adapter";
+const DEFAULT_ENGRAM_TIMEOUT_MS = 10_000;
 
 function sanitizeName(input: string): string {
   const lower = input.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
@@ -257,7 +266,21 @@ export function resolveMemoryBackendConfig(params: {
 }): ResolvedMemoryBackendConfig {
   const backend = params.cfg.memory?.backend ?? DEFAULT_BACKEND;
   const citations = params.cfg.memory?.citations ?? DEFAULT_CITATIONS;
-  if (backend !== "qmd") {
+
+  if (backend === "engram") {
+    const command = params.cfg.memory?.engram?.command?.trim() || DEFAULT_ENGRAM_COMMAND;
+    const timeoutMs = resolveTimeoutMs(
+      params.cfg.memory?.engram?.timeoutMs,
+      DEFAULT_ENGRAM_TIMEOUT_MS,
+    );
+    return {
+      backend: "engram",
+      citations,
+      engram: { command, timeoutMs },
+    };
+  }
+
+  if (backend !== "qmd" && backend !== "engram") {
     return { backend: "builtin", citations };
   }
 
@@ -303,7 +326,7 @@ export function resolveMemoryBackendConfig(params: {
   };
 
   return {
-    backend: "qmd",
+    backend,
     citations,
     qmd: resolved,
   };

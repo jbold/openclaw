@@ -9,7 +9,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveMemoryBackendConfig } from "./backend-config.js";
 
 const log = createSubsystemLogger("memory");
-const QMD_MANAGER_CACHE = new Map<string, MemorySearchManager>();
+const PRIMARY_MANAGER_CACHE = new Map<string, MemorySearchManager>();
 
 export type MemorySearchManagerResult = {
   manager: MemorySearchManager | null;
@@ -21,9 +21,10 @@ export async function getMemorySearchManager(params: {
   agentId: string;
 }): Promise<MemorySearchManagerResult> {
   const resolved = resolveMemoryBackendConfig(params);
+
   if (resolved.backend === "qmd" && resolved.qmd) {
-    const cacheKey = buildQmdCacheKey(params.agentId, resolved.qmd);
-    const cached = QMD_MANAGER_CACHE.get(cacheKey);
+    const cacheKey = buildPrimaryCacheKey(params.agentId, "qmd", resolved.qmd);
+    const cached = PRIMARY_MANAGER_CACHE.get(cacheKey);
     if (cached) {
       return { manager: cached };
     }
@@ -37,20 +38,48 @@ export async function getMemorySearchManager(params: {
       if (primary) {
         const wrapper = new FallbackMemoryManager(
           {
+            backendName: "qmd",
             primary,
             fallbackFactory: async () => {
               const { MemoryIndexManager } = await import("./manager.js");
               return await MemoryIndexManager.get(params);
             },
           },
-          () => QMD_MANAGER_CACHE.delete(cacheKey),
+          () => PRIMARY_MANAGER_CACHE.delete(cacheKey),
         );
-        QMD_MANAGER_CACHE.set(cacheKey, wrapper);
+        PRIMARY_MANAGER_CACHE.set(cacheKey, wrapper);
         return { manager: wrapper };
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn(`qmd memory unavailable; falling back to builtin: ${message}`);
+    }
+  }
+
+  if (resolved.backend === "engram" && resolved.engram) {
+    try {
+      const { resolveAgentWorkspaceDir } = await import("../agents/agent-scope.js");
+      const { EngramMemoryManager } = await import("./engram-manager.js");
+      const primary = await EngramMemoryManager.create({
+        workspaceDir: resolveAgentWorkspaceDir(params.cfg, params.agentId),
+        command: resolved.engram.command,
+        timeoutMs: resolved.engram.timeoutMs,
+      });
+      if (primary) {
+        return {
+          manager: new FallbackMemoryManager({
+            backendName: "engram",
+            primary,
+            fallbackFactory: async () => {
+              const { MemoryIndexManager } = await import("./manager.js");
+              return await MemoryIndexManager.get(params);
+            },
+          }),
+        };
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn(`engram memory unavailable; falling back to builtin: ${message}`);
     }
   }
 
@@ -72,6 +101,7 @@ class FallbackMemoryManager implements MemorySearchManager {
 
   constructor(
     private readonly deps: {
+      backendName: string;
       primary: MemorySearchManager;
       fallbackFactory: () => Promise<MemorySearchManager | null>;
     },
@@ -88,9 +118,10 @@ class FallbackMemoryManager implements MemorySearchManager {
       } catch (err) {
         this.primaryFailed = true;
         this.lastError = err instanceof Error ? err.message : String(err);
-        log.warn(`qmd memory failed; switching to builtin index: ${this.lastError}`);
+        log.warn(
+          `${this.deps.backendName} memory failed; switching to builtin index: ${this.lastError}`,
+        );
         await this.deps.primary.close?.().catch(() => {});
-        // Evict the failed wrapper so the next request can retry QMD with a fresh manager.
         this.evictCacheEntry();
       }
     }
@@ -117,7 +148,7 @@ class FallbackMemoryManager implements MemorySearchManager {
       return this.deps.primary.status();
     }
     const fallbackStatus = this.fallback?.status();
-    const fallbackInfo = { from: "qmd", reason: this.lastError ?? "unknown" };
+    const fallbackInfo = { from: this.deps.backendName, reason: this.lastError ?? "unknown" };
     if (fallbackStatus) {
       const custom = fallbackStatus.custom ?? {};
       return {
@@ -201,8 +232,8 @@ class FallbackMemoryManager implements MemorySearchManager {
   }
 }
 
-function buildQmdCacheKey(agentId: string, config: ResolvedQmdConfig): string {
-  return `${agentId}:${stableSerialize(config)}`;
+function buildPrimaryCacheKey(agentId: string, backend: string, config: ResolvedQmdConfig): string {
+  return `${agentId}:${backend}:${stableSerialize(config)}`;
 }
 
 function stableSerialize(value: unknown): string {
