@@ -108,4 +108,38 @@ describe("resolveMemoryBackendConfig", () => {
     const resolved = resolveMemoryBackendConfig({ cfg, agentId: "main" });
     expect(resolved.qmd?.searchMode).toBe("vsearch");
   });
+
+  it("resolves engram backend with defaults", () => {
+    const cfg = {
+      agents: { defaults: { workspace: "/tmp/memory-test" } },
+      memory: {
+        backend: "engram",
+      },
+    } as OpenClawConfig;
+
+    const resolved = resolveMemoryBackendConfig({ cfg, agentId: "main" });
+    expect(resolved.backend).toBe("engram");
+    expect(resolved.engram?.command).toBe(
+      "/var/home/bean/.openclaw/workspace/engram/target/debug/engram-openclaw-adapter",
+    );
+    expect(resolved.engram?.timeoutMs).toBe(10_000);
+  });
+
+  it("resolves engram command and timeout overrides", () => {
+    const cfg = {
+      agents: { defaults: { workspace: "/tmp/memory-test" } },
+      memory: {
+        backend: "engram",
+        engram: {
+          command: "engram-openclaw-adapter",
+          timeoutMs: 1200,
+        },
+      },
+    } as OpenClawConfig;
+
+    const resolved = resolveMemoryBackendConfig({ cfg, agentId: "main" });
+    expect(resolved.backend).toBe("engram");
+    expect(resolved.engram?.command).toBe("engram-openclaw-adapter");
+    expect(resolved.engram?.timeoutMs).toBe(1200);
+  });
 });
