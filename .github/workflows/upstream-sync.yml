@@ -1,0 +1,122 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    # Run every Monday at 9:00 UTC
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no PR creation)"
+        type: boolean
+        default: false
+
+jobs:
+  upstream-sync:
+    name: Sync from upstream
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/openclaw/openclaw.git || true
+          git remote -v
+
+      - name: Fetch upstream changes
+        run: |
+          git fetch upstream main
+          echo "Latest upstream commit: $(git rev-parse upstream/main)"
+          echo "Current main commit: $(git rev-parse origin/main)"
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "No new upstream changes"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "New upstream changes detected"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            
+            # Get commit range for PR description
+            COMMITS=$(git rev-list --oneline origin/main..upstream/main | head -20)
+            echo "COMMIT_LIST<<EOF" >> $GITHUB_OUTPUT
+            echo "$COMMITS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            
+            # Count commits
+            COMMIT_COUNT=$(git rev-list --count origin/main..upstream/main)
+            echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create sync branch
+        if: steps.changes.outputs.has_changes == 'true' && !inputs.dry_run
+        run: |
+          BRANCH_NAME="upstream-sync/$(date +%Y-%m-%d)"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+          git checkout -b "$BRANCH_NAME"
+          git merge upstream/main --no-edit || {
+            echo "Merge conflict detected. Manual intervention required."
+            git merge --abort
+            exit 1
+          }
+          git push origin "$BRANCH_NAME"
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true' && !inputs.dry_run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🔄 Upstream sync: ${context.payload.inputs?.commit_count || '${{ steps.changes.outputs.commit_count }}'} new commits from openclaw/openclaw`,
+              head: process.env.BRANCH_NAME,
+              base: 'main',
+              body: `
+            ## 🔄 Upstream Sync
+
+            This PR contains **${{ steps.changes.outputs.commit_count }}** new commits from [openclaw/openclaw](https://github.com/openclaw/openclaw).
+
+            ### Recent Changes
+            \`\`\`
+            ${{ steps.changes.outputs.COMMIT_LIST }}
+            \`\`\`
+
+            ### ⚠️ Review Required
+            - [ ] Review changes for conflicts with fork-specific modifications
+            - [ ] Test critical functionality still works
+            - [ ] Update any fork-specific documentation if needed
+            - [ ] Verify CI passes
+
+            ---
+            *This PR was automatically created by the upstream sync workflow.*
+            *Do not auto-merge - manual review required.*
+            `,
+              labels: ['upstream-sync', 'needs-review']
+            });
+
+            console.log(`Created PR #${pr.number}: ${pr.html_url}`);
+
+      - name: Summary
+        run: |
+          if [[ "${{ steps.changes.outputs.has_changes }}" == "true" ]]; then
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              echo "✅ Dry run: ${{ steps.changes.outputs.commit_count }} upstream changes detected"
+            else
+              echo "✅ Created upstream sync PR with ${{ steps.changes.outputs.commit_count }} commits"
+            fi
+          else
+            echo "✅ No upstream changes - fork is up to date"
+          fi
