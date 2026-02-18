@@ -73,9 +73,10 @@ jobs:
       - name: Check for known vulnerabilities
         run: pnpm audit --prod || true
       - name: Detect secrets
-        uses: Yelp/detect-secrets-action@v2
-        with:
-          baseline_file: .secrets.baseline
+        run: |
+          pip install detect-secrets
+          detect-secrets scan --baseline .secrets.baseline
+          detect-secrets audit --report .secrets.baseline
 
   gate:
     name: "All Checks"
